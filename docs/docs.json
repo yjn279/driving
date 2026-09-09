@@ -15,6 +15,10 @@
           {
             "group": "はじめに",
             "pages": ["index"]
+          },
+          {
+            "group": "使いかた",
+            "pages": ["user/getting-started", "user/driving", "user/review"]
           }
         ]
       }
