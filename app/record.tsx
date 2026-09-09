@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
 import { DeviceMotion } from 'expo-sensors';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import type { SQLiteDatabase } from 'expo-sqlite';
 
 import { evaluateAcceleration, evaluateStillness, upFromGravityAverage, type TimedSample } from '../src/core/calibration';
+import { haversineDistance, type LatLon } from '../src/core/distance';
 import {
   buildVehicleFrame,
   loadFromAcceleration,
@@ -13,12 +16,22 @@ import {
   type VehicleFrame,
 } from '../src/core/vehicle-frame';
 import type { Vector3 } from '../src/core/vector';
+import { getDatabase } from '../src/db/schema';
+import { insertAccelerations, insertLocations, type AccelerationSample, type LocationSample } from '../src/db/samples';
+import { createSession, endSession } from '../src/db/sessions';
 import { LoadArrow } from '../src/ui/LoadArrow';
 
 /** 加速度センサーの更新間隔。50 Hz（`docs/design.md`「データ量とサンプリング」）。 */
 const SENSOR_UPDATE_INTERVAL_MS = 20;
 /** 判定窓（直近 2 秒）を常に切り出せるよう、これより長く履歴を保つ。 */
 const SAMPLE_HISTORY_MS = 3000;
+/** 位置情報の取得間隔。1 Hz（`docs/design.md`「データ量とサンプリング」）。 */
+const LOCATION_UPDATE_INTERVAL_MS = 1000;
+/** メモリに積んだ加速度・位置情報をまとめて書き込む間隔（計画「判定に使う数値」）。 */
+const FLUSH_INTERVAL_MS = 5000;
+/** 経過時間の表示更新間隔。 */
+const ELAPSED_DISPLAY_INTERVAL_MS = 1000;
+const GRAVITY_MS2 = 9.81;
 
 const ZERO_LOAD: Load = { front: 0, right: 0 };
 
@@ -42,10 +55,67 @@ function pruneSamples(samples: readonly TimedSample[]): readonly TimedSample[] {
   return samples.filter((sample) => sample.t >= latestT - SAMPLE_HISTORY_MS);
 }
 
+/**
+ * 記録 1 回分の状態。加速度・位置情報はコールバックごとに書き込まず、この配列へ積んでから
+ * `flushBuffers` で数秒ごとにまとめて書き込む。頻繁に更新されるため React の state ではなく
+ * 通常のオブジェクトで保持する。
+ */
+type RecordingSession = {
+  readonly db: SQLiteDatabase;
+  readonly sessionId: number;
+  readonly startedAt: number;
+  accelerationBuffer: AccelerationSample[];
+  locationBuffer: LocationSample[];
+  lastLocation: LatLon | undefined;
+  distanceM: number;
+  motionSubscription: { remove: () => void } | undefined;
+  locationSubscription: Location.LocationSubscription | undefined;
+  flushTimer: ReturnType<typeof setInterval> | undefined;
+  elapsedTimer: ReturnType<typeof setInterval> | undefined;
+  stopped: boolean;
+};
+
+/** バッファに積んだ加速度・位置情報をまとめて 1 回ずつ書き込み、バッファを空にする。 */
+async function flushBuffers(session: RecordingSession): Promise<void> {
+  const accelerations = session.accelerationBuffer;
+  const locations = session.locationBuffer;
+  session.accelerationBuffer = [];
+  session.locationBuffer = [];
+  await Promise.all([
+    insertAccelerations(session.db, session.sessionId, accelerations),
+    insertLocations(session.db, session.sessionId, locations),
+  ]);
+}
+
+/** 経過時間を「MM:SS」(1 時間以上は「HH:MM:SS」)に整形する。 */
+function formatElapsedTime(elapsedMs: number): string {
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
+}
+
+/** メートルを「◯ m」または「◯.◯ km」に整形する。 */
+function formatDistanceM(distanceM: number): string {
+  if (distanceM >= 1000) return `${(distanceM / 1000).toFixed(1)} km`;
+  return `${Math.round(distanceM)} m`;
+}
+
+/** 荷重の大きさを G 単位で整形する。 */
+function formatLoadMagnitude(load: Load): string {
+  const magnitudeG = Math.sqrt(load.front ** 2 + load.right ** 2) / GRAVITY_MS2;
+  return `${magnitudeG.toFixed(2)} G`;
+}
+
 export default function RecordScreen() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: 'requesting-permission' });
   const [liveLoad, setLiveLoad] = useState<Load>(ZERO_LOAD);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [distanceM, setDistanceM] = useState(0);
+  const recordingRef = useRef<RecordingSession | null>(null);
 
   // 画面に入った時点で位置情報と DeviceMotion の権限をまとめて要求する。
   // キャリブレーションの途中で権限ダイアログを出すと、運転中に操作を求めることになるため。
@@ -129,6 +199,95 @@ export default function RecordScreen() {
     return () => subscription.remove();
   }, [phase]);
 
+  // 記録の段階では、車両座標系へ変換した加速度と位置情報をバッファへ積み、
+  // 5 秒ごとにまとめて書き込む。コールバックごとの書き込みはしない。
+  useEffect(() => {
+    if (phase.kind !== 'recording') return;
+
+    let cancelled = false;
+
+    (async () => {
+      const startedAt = Date.now();
+      const db = await getDatabase();
+      const sessionId = await createSession(db, startedAt);
+      if (cancelled) return;
+
+      await activateKeepAwakeAsync();
+      if (cancelled) {
+        await deactivateKeepAwake();
+        return;
+      }
+
+      const session: RecordingSession = {
+        db,
+        sessionId,
+        startedAt,
+        accelerationBuffer: [],
+        locationBuffer: [],
+        lastLocation: undefined,
+        distanceM: 0,
+        motionSubscription: undefined,
+        locationSubscription: undefined,
+        flushTimer: undefined,
+        elapsedTimer: undefined,
+        stopped: false,
+      };
+      recordingRef.current = session;
+
+      session.motionSubscription = DeviceMotion.addListener((measurement) => {
+        if (!measurement.acceleration) return;
+        const vehicleAcceleration = toVehicleAcceleration(phase.frame, measurement.acceleration);
+        session.accelerationBuffer.push({ t: Date.now(), ax: vehicleAcceleration.ax, ay: vehicleAcceleration.ay });
+        setLiveLoad(loadFromAcceleration(vehicleAcceleration));
+      });
+
+      // 位置情報は 1 Hz で取得する。ネイティブ側の通知がこれより頻繁でも、
+      // 直前のサンプルからの経過時間で間引いて 1 Hz に揃える。
+      let lastLocationAt: number | undefined;
+      session.locationSubscription = await Location.watchPositionAsync(
+        { timeInterval: LOCATION_UPDATE_INTERVAL_MS, distanceInterval: 0 },
+        (location) => {
+          if (lastLocationAt !== undefined && location.timestamp - lastLocationAt < LOCATION_UPDATE_INTERVAL_MS) {
+            return;
+          }
+          lastLocationAt = location.timestamp;
+
+          const point: LatLon = { lat: location.coords.latitude, lon: location.coords.longitude };
+          if (session.lastLocation) {
+            session.distanceM += haversineDistance(session.lastLocation, point);
+            setDistanceM(session.distanceM);
+          }
+          session.lastLocation = point;
+          session.locationBuffer.push({ t: location.timestamp, lat: point.lat, lon: point.lon });
+        },
+      );
+      if (cancelled) {
+        session.locationSubscription.remove();
+        return;
+      }
+
+      session.flushTimer = setInterval(() => {
+        flushBuffers(session);
+      }, FLUSH_INTERVAL_MS);
+
+      session.elapsedTimer = setInterval(() => {
+        setElapsedMs(Date.now() - session.startedAt);
+      }, ELAPSED_DISPLAY_INTERVAL_MS);
+    })();
+
+    return () => {
+      cancelled = true;
+      const session = recordingRef.current;
+      session?.motionSubscription?.remove();
+      session?.locationSubscription?.remove();
+      if (session?.flushTimer) clearInterval(session.flushTimer);
+      if (session?.elapsedTimer) clearInterval(session.elapsedTimer);
+      // 「停止して保存」を経ずに画面を離れた場合(戻る操作など)でも、画面の消灯抑止を必ず解除する。
+      // すでに handleStop で解除済みのときは無害な二重呼び出しになる。
+      deactivateKeepAwake();
+    };
+  }, [phase]);
+
   const handleRestart = useCallback(() => {
     setLiveLoad(ZERO_LOAD);
     setPhase({ kind: 'stillness' });
@@ -139,6 +298,26 @@ export default function RecordScreen() {
   }, []);
 
   const handleBackToList = useCallback(() => {
+    router.replace('/');
+  }, [router]);
+
+  // 停止と保存。バッファに残ったサンプルも書き込んでからセッションを確定し、一覧へ戻る。
+  const handleStop = useCallback(async () => {
+    const session = recordingRef.current;
+    if (!session || session.stopped) return;
+    session.stopped = true;
+
+    if (session.flushTimer) clearInterval(session.flushTimer);
+    if (session.elapsedTimer) clearInterval(session.elapsedTimer);
+    session.motionSubscription?.remove();
+    session.locationSubscription?.remove();
+
+    const endedAt = Date.now();
+    const durationMs = endedAt - session.startedAt;
+    await flushBuffers(session);
+    await endSession(session.db, session.sessionId, endedAt, durationMs, session.distanceM);
+    await deactivateKeepAwake();
+
     router.replace('/');
   }, [router]);
 
@@ -187,7 +366,25 @@ export default function RecordScreen() {
         </View>
       )}
 
-      {phase.kind === 'recording' && <View style={styles.container} />}
+      {phase.kind === 'recording' && (
+        <View style={styles.center}>
+          <LoadArrow load={liveLoad} />
+          <Text style={styles.loadMagnitude}>{formatLoadMagnitude(liveLoad)}</Text>
+          <View style={styles.recordingStats}>
+            <View style={styles.recordingStatItem}>
+              <Text style={styles.recordingStatLabel}>経過時間</Text>
+              <Text style={styles.recordingStatValue}>{formatElapsedTime(elapsedMs)}</Text>
+            </View>
+            <View style={styles.recordingStatItem}>
+              <Text style={styles.recordingStatLabel}>走行距離</Text>
+              <Text style={styles.recordingStatValue}>{formatDistanceM(distanceM)}</Text>
+            </View>
+          </View>
+          <Pressable style={styles.stopButton} onPress={handleStop}>
+            <Text style={styles.stopButtonLabel}>停止して保存</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -232,5 +429,40 @@ const styles = StyleSheet.create({
   retryButtonLabel: {
     color: '#666666',
     fontSize: 15,
+  },
+  loadMagnitude: {
+    fontSize: 28,
+    fontWeight: '700',
+    marginTop: 8,
+  },
+  recordingStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    marginTop: 32,
+  },
+  recordingStatItem: {
+    alignItems: 'center',
+  },
+  recordingStatLabel: {
+    fontSize: 14,
+    color: '#666666',
+  },
+  recordingStatValue: {
+    fontSize: 32,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  stopButton: {
+    backgroundColor: '#cc3333',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    marginTop: 40,
+  },
+  stopButtonLabel: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '700',
   },
 });
