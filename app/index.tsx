@@ -80,12 +80,14 @@ export default function IndexScreen() {
           keyExtractor={(item) => String(item.id)}
           renderItem={({ item }) => (
             <View style={styles.row}>
-              <View style={styles.rowInfo}>
-                <Text style={styles.rowDate}>{formatDateTime(item.startedAt)}</Text>
-                <Text style={styles.rowDetail}>
-                  {formatDuration(item.durationMs)} ・ {formatDistance(item.distanceM)}
-                </Text>
-              </View>
+              <Link href={`/session/${item.id}`} asChild>
+                <Pressable style={styles.rowInfo}>
+                  <Text style={styles.rowDate}>{formatDateTime(item.startedAt)}</Text>
+                  <Text style={styles.rowDetail}>
+                    {formatDuration(item.durationMs)} ・ {formatDistance(item.distanceM)}
+                  </Text>
+                </Pressable>
+              </Link>
               <Pressable onPress={() => handleDelete(item.id)} hitSlop={8}>
                 <Text style={styles.deleteLabel}>削除</Text>
               </Pressable>
