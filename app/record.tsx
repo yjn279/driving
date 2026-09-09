@@ -31,11 +31,11 @@ import { createSession, endSession } from '../src/db/sessions';
 import { formatDistanceM } from '../src/ui/format';
 import { LoadArrow } from '../src/ui/LoadArrow';
 
-/** 加速度センサーの更新間隔。50 Hz（`docs/design.md`「データ量とサンプリング」）。 */
+/** 加速度センサーの更新間隔。50 Hz（`docs/developer/specification.mdx`「サンプリングと書き込み」）。 */
 const SENSOR_UPDATE_INTERVAL_MS = 20;
 /** 判定窓（直近 2 秒）を常に切り出せるよう、これより長く履歴を保つ。 */
 const SAMPLE_HISTORY_MS = 3000;
-/** 位置情報の取得間隔。1 Hz（`docs/design.md`「データ量とサンプリング」）。 */
+/** 位置情報の取得間隔。1 Hz（`docs/developer/specification.mdx`「サンプリングと書き込み」）。 */
 const LOCATION_UPDATE_INTERVAL_MS = 1000;
 /** メモリに積んだ加速度・位置情報をまとめて書き込む間隔。書き込み頻度による負荷を抑えつつ、異常終了時に失われる量を小さく保つ。 */
 const FLUSH_INTERVAL_MS = 5000;

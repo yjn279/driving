@@ -1,5 +1,5 @@
 /**
- * セッション（走行 1 回分）の読み書き（`requirement.md`「データ構造」）。
+ * セッション（走行 1 回分）の読み書き（`docs/developer/specification.mdx`「データ構造」）。
  *
  * 記録開始時に `started_at` だけを持つ行を作り、停止時に `ended_at` ・ `duration_ms` ・
  * `distance_m` を確定する。停止処理が走らずに `ended_at` が NULL のまま残った行は、

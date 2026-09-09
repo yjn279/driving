@@ -1,6 +1,6 @@
 /**
  * 荷重の向きを矢印で実時間表示する部品。キャリブレーションの確認段階で使う。
- * 縦軸の上を前荷重、横軸の右を右荷重とする（`docs/design.md`「座標系と荷重の定義」）。
+ * 縦軸の上を前荷重、横軸の右を右荷重とする（`docs/developer/specification.mdx`「座標系と荷重」）。
  */
 
 import Svg, { Circle, Line, Polygon } from 'react-native-svg';

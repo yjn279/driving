@@ -1,0 +1,40 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "ドライブ荷重マッピング",
+  "colors": {
+    "primary": "#16A34A",
+    "light": "#07C983",
+    "dark": "#15803D"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "ユーザーマニュアル",
+        "groups": [
+          {
+            "group": "はじめに",
+            "pages": ["index"]
+          },
+          {
+            "group": "使いかた",
+            "pages": ["user/getting-started", "user/driving", "user/review"]
+          }
+        ]
+      },
+      {
+        "tab": "開発者マニュアル",
+        "groups": [
+          {
+            "group": "仕様",
+            "pages": ["developer/specification", "developer/testing"]
+          },
+          {
+            "group": "開発",
+            "pages": ["developer/development"]
+          }
+        ]
+      }
+    ]
+  }
+}

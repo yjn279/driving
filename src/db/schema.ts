@@ -1,5 +1,5 @@
 /**
- * SQLite データベースの初期化（`requirement.md`「データ構造」）。
+ * SQLite データベースの初期化（`docs/developer/specification.mdx`「データ構造」）。
  *
  * `sessions` ・ `locations` ・ `accelerations` の 3 表と `(session_id, t)` の索引を作り、
  * 外部キーの連鎖削除を有効にする。アプリ全体で 1 つの接続を共有する。

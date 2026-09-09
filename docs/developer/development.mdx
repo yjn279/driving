@@ -1,0 +1,61 @@
+---
+title: "開発環境"
+---
+
+## 実行環境
+
+Expo（React Native / TypeScript）で実装し、Expo Go から起動します。
+
+動作確認の手段が Expo Go に限られるため、Expo Go に同梱されているモジュールだけで
+組み立てられる構成を選んでいます。
+
+| 用途 | 採用 |
+| :-- | :-- |
+| SDK | Expo SDK 57 |
+| 画面遷移 | expo-router |
+| 加速度・重力 | expo-sensors の DeviceMotion |
+| 位置情報 | expo-location |
+| 永続化 | expo-sqlite |
+| 地図 | react-native-maps |
+| 図形描画 | react-native-svg |
+| 画面の消灯抑止 | expo-keep-awake |
+
+いずれも Expo Go に同梱されており、追加のビルドなしに動きます。
+
+## 検証手順
+
+変更のたびに、次の 4 つを実行します。
+
+```bash
+npx tsc --noEmit
+npm test
+(cd docs && PUPPETEER_SKIP_DOWNLOAD=1 npx mint@latest validate)
+(cd docs && PUPPETEER_SKIP_DOWNLOAD=1 npx mint@latest broken-links)
+```
+
+ドキュメントサイトを手元で読むには、次を使います。
+
+```bash
+(cd docs && PUPPETEER_SKIP_DOWNLOAD=1 npx mint@latest dev)
+```
+
+### `mint` をアプリの依存に加えない理由
+
+`mint` は puppeteer を含む 960 以上のパッケージを連れてきます。アプリの `package.json` の依存に
+加えると `npm install` が重くなり、`docs/node_modules` ができると Expo のバンドラーがそれを
+巻き込んでしまいます。そのため `mint` はどこにもインストールせず、`npx mint@latest <コマンド>`
+でそのつど取得して使います。
+
+### `PUPPETEER_SKIP_DOWNLOAD=1` を付ける理由
+
+`mint` が連れてくる puppeteer は、インストール時に Chromium 本体のダウンロードを試みます。この
+ダウンロードが失敗すると、`mint` は何も出力しないまま終了コード 1 で落ちます。`validate` と
+`broken-links` はブラウザを使わないため、`PUPPETEER_SKIP_DOWNLOAD=1` で Chromium のダウンロードを
+省いても支障はありません。
+
+## 既知の制約
+
+- 記録はアプリを前面に置いている間だけ動きます。Expo Go はバックグラウンドでの位置情報取得に
+  対応していません
+- 加速度センサーと位置情報を使うため、シミュレーターでは動作を確認できません。実機でのみ
+  検証できます

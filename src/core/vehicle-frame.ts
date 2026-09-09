@@ -1,5 +1,5 @@
 /**
- * 車両座標系への変換と荷重の向き（`docs/design.md`「座標系と荷重の定義」）。
+ * 車両座標系への変換と荷重の向き（`docs/developer/specification.mdx`「座標系と荷重」）。
  *
  * 車両座標系は右手系で、forward = 前方・right = 右方・up = 鉛直上向き・right = forward × up。
  * 荷重は加速度の逆向き（load = -a）。
