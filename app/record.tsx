@@ -6,7 +6,13 @@ import { DeviceMotion } from 'expo-sensors';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import type { SQLiteDatabase } from 'expo-sqlite';
 
-import { evaluateAcceleration, evaluateStillness, upFromGravityAverage, type TimedSample } from '../src/core/calibration';
+import {
+  evaluateAcceleration,
+  evaluateStillness,
+  horizontalAccelerationMagnitude,
+  upFromGravityAverage,
+  type TimedSample,
+} from '../src/core/calibration';
 import { haversineDistance, type LatLon } from '../src/core/distance';
 import {
   buildVehicleFrame,
@@ -34,10 +40,12 @@ const FLUSH_INTERVAL_MS = 5000;
 /** 経過時間の表示更新間隔。 */
 const ELAPSED_DISPLAY_INTERVAL_MS = 1000;
 /**
- * 荷重の矢印を描き直す間隔。センサーは 50 Hz で届くが、向きの変化を追うには 10 Hz で足りる。
+ * センサーの値を画面へ反映する間隔。センサーは 50 Hz で届くが、表示は 10 Hz で足りる。
  * 届いたサンプルごとに描き直すと、車載で長時間動かしたときの発熱と電池の消耗が増える。
  */
-const LIVE_LOAD_DISPLAY_INTERVAL_MS = 100;
+const LIVE_DISPLAY_INTERVAL_MS = 100;
+/** 加速フェーズが成立する水平加速度の目安。画面の案内に出す（判定の実体は `evaluateAcceleration`）。 */
+const ACCELERATION_HINT_MS2 = 1.5;
 
 const ZERO_LOAD: Load = { front: 0, right: 0 };
 
@@ -137,15 +145,17 @@ export default function RecordScreen() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [distanceM, setDistanceM] = useState(0);
   const [stopError, setStopError] = useState<string | undefined>(undefined);
+  /** 加速フェーズで表示する、直近 2 秒の水平加速度。まだ 2 秒分そろっていなければ undefined。 */
+  const [horizontalMs2, setHorizontalMs2] = useState<number | undefined>(undefined);
   const recordingRef = useRef<RecordingSession | null>(null);
-  const liveLoadUpdatedAtRef = useRef(0);
+  const displayUpdatedAtRef = useRef(0);
 
-  /** 荷重の表示を間引いて更新する。センサーのコールバックからはこちらを使う。 */
-  const updateLiveLoad = useCallback((load: Load) => {
+  /** 表示を更新してよい頃合いなら true を返す。センサーのコールバックからはこれで間引く。 */
+  const shouldUpdateDisplay = useCallback(() => {
     const now = Date.now();
-    if (now - liveLoadUpdatedAtRef.current < LIVE_LOAD_DISPLAY_INTERVAL_MS) return;
-    liveLoadUpdatedAtRef.current = now;
-    setLiveLoad(load);
+    if (now - displayUpdatedAtRef.current < LIVE_DISPLAY_INTERVAL_MS) return false;
+    displayUpdatedAtRef.current = now;
+    return true;
   }, []);
 
   // 画面に入った時点で位置情報と DeviceMotion の権限をまとめて要求する。
@@ -220,15 +230,19 @@ export default function RecordScreen() {
         if (accelerationAverage) {
           transitioned = true;
           setPhase({ kind: 'confirm', frame: buildVehicleFrame(phase.gravityAverage, accelerationAverage) });
+          return;
         }
+        if (shouldUpdateDisplay()) setHorizontalMs2(horizontalAccelerationMagnitude(samples, up));
         return;
       }
 
-      updateLiveLoad(loadFromAcceleration(toVehicleAcceleration(phase.frame, measurement.acceleration)));
+      if (shouldUpdateDisplay()) {
+        setLiveLoad(loadFromAcceleration(toVehicleAcceleration(phase.frame, measurement.acceleration)));
+      }
     });
 
     return () => subscription.remove();
-  }, [phase, updateLiveLoad]);
+  }, [phase, shouldUpdateDisplay]);
 
   // 記録の段階では、車両座標系へ変換した加速度と位置情報をバッファへ積み、
   // 5 秒ごとにまとめて書き込む。コールバックごとの書き込みはしない。
@@ -271,7 +285,7 @@ export default function RecordScreen() {
           if (!measurement.acceleration) return;
           const vehicleAcceleration = toVehicleAcceleration(phase.frame, measurement.acceleration);
           session.accelerationBuffer.push({ t: Date.now(), ax: vehicleAcceleration.ax, ay: vehicleAcceleration.ay });
-          updateLiveLoad(loadFromAcceleration(vehicleAcceleration));
+          if (shouldUpdateDisplay()) setLiveLoad(loadFromAcceleration(vehicleAcceleration));
         });
 
         // 位置情報は 1 Hz で取得する。ネイティブ側の通知がこれより頻繁でも、
@@ -330,11 +344,12 @@ export default function RecordScreen() {
       // すでに handleStop で解除済みのときは無害な二重呼び出しになる。
       deactivateKeepAwake();
     };
-  }, [phase, updateLiveLoad]);
+  }, [phase, shouldUpdateDisplay]);
 
   const handleRestart = useCallback(() => {
-    liveLoadUpdatedAtRef.current = 0;
+    displayUpdatedAtRef.current = 0;
     setLiveLoad(ZERO_LOAD);
+    setHorizontalMs2(undefined);
     setPhase({ kind: 'stillness' });
   }, []);
 
@@ -411,6 +426,12 @@ export default function RecordScreen() {
       {phase.kind === 'acceleration' && (
         <View style={styles.center}>
           <Text style={styles.message}>まっすぐ加速してください</Text>
+          <Text style={styles.loadMagnitude}>
+            {horizontalMs2 === undefined ? '—' : `${horizontalMs2.toFixed(1)} m/s²`}
+          </Text>
+          <Text style={styles.hint}>
+            {ACCELERATION_HINT_MS2.toFixed(1)} m/s² 以上をまっすぐ 2 秒続けると、次へ進みます
+          </Text>
         </View>
       )}
 

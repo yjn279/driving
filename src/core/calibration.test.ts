@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Vector3 } from './vector';
-import { evaluateAcceleration, evaluateStillness, upFromGravityAverage, type TimedSample } from './calibration';
+import {
+  evaluateAcceleration,
+  evaluateStillness,
+  horizontalAccelerationMagnitude,
+  upFromGravityAverage,
+  type TimedSample,
+} from './calibration';
 
 const SPACING_MS = 20;
 // 小さく変動させても標準偏差の閾値 0.15 を超えない、決め打ちのジッター列。
@@ -70,25 +76,68 @@ describe('upFromGravityAverage', () => {
   });
 });
 
+/** 2 秒かけて水平方向が `sweepDeg` 度ぶん一方向へ回っていく加速。曲がりながらの加速を模す。 */
+function curvingSamples(count: number, sweepDeg: number): TimedSample[] {
+  return Array.from({ length: count }, (_, i) => {
+    const angle = ((-sweepDeg / 2 + (sweepDeg * i) / (count - 1)) * Math.PI) / 180;
+    return {
+      t: i * SPACING_MS,
+      acceleration: { x: 3 * Math.sin(angle), y: 3 * Math.cos(angle), z: -9.81 },
+    };
+  });
+}
+
 describe('evaluateAcceleration', () => {
-  it('水平成分1.5 m/s²以上・向きのばらつき15°以内が2秒続くと加速が成立する', () => {
+  it('水平成分の平均が1.5 m/s²以上で向きが安定した状態が2秒続くと加速が成立する', () => {
     const result = evaluateAcceleration(acceleratingSamples(101), UP);
     expect(result).toBeDefined();
     expect(result!.y).toBeCloseTo(3, 0);
   });
 
-  it('水平成分が1.5 m/s²に届かない場合は加速が成立しない', () => {
+  it('水平成分の平均が1.5 m/s²に届かない場合は加速が成立しない', () => {
     const result = evaluateAcceleration(acceleratingSamples(101, { horizontalY: 1 }), UP);
     expect(result).toBeUndefined();
   });
 
-  it('向きが15°を超えて振れる場合は加速が成立しない', () => {
+  it('個々のサンプルが閾値を割っても、ならした値がまっすぐな加速なら成立する', () => {
+    // 路面の凹凸を模して、20 サンプルに 1 つ水平成分がほぼ 0 に落ちる乱れを混ぜる。
+    // サンプル 1 つずつに閾値を課すと、まっすぐ加速していてもこれで不成立になってしまう。
     const samples: TimedSample[] = Array.from({ length: 101 }, (_, i) => ({
       t: i * SPACING_MS,
-      // atan(1.6 / 3) ≈ 28.1° で、平均方向（y 軸寄り）から左右に振れ続ける。
-      acceleration: { x: i % 2 === 0 ? 1.6 : -1.6, y: 3, z: -9.81 },
+      acceleration:
+        i % 20 === 0
+          ? { x: 0, y: 0.1, z: -9.81 }
+          : { x: JITTER[i % JITTER.length], y: 3, z: -9.81 },
     }));
     const result = evaluateAcceleration(samples, UP);
-    expect(result).toBeUndefined();
+    expect(result).toBeDefined();
+    expect(result!.y).toBeCloseTo(2.83, 1);
+  });
+
+  it('ノイズで向きが1サンプルごとに振れても、平均の向きが動かなければ成立する', () => {
+    const samples: TimedSample[] = Array.from({ length: 101 }, (_, i) => ({
+      t: i * SPACING_MS,
+      // atan(1.6 / 3) ≈ 28.1° で左右へ交互に振れる。平均すれば y 軸方向に揃う。
+      acceleration: { x: i % 2 === 0 ? 1.6 : -1.6, y: 3, z: -9.81 },
+    }));
+    expect(evaluateAcceleration(samples, UP)).toBeDefined();
+  });
+
+  it('曲がりながらの加速のように向きが一方向へ動いていく場合は成立しない', () => {
+    expect(evaluateAcceleration(curvingSamples(101, 40), UP)).toBeUndefined();
+  });
+
+  it('向きのずれが15°に収まる範囲なら成立する', () => {
+    expect(evaluateAcceleration(curvingSamples(101, 20), UP)).toBeDefined();
+  });
+});
+
+describe('horizontalAccelerationMagnitude', () => {
+  it('直近2秒の水平成分の平均の大きさを返す', () => {
+    expect(horizontalAccelerationMagnitude(acceleratingSamples(101), UP)).toBeCloseTo(3, 1);
+  });
+
+  it('2秒に満たない時点では値を返さない', () => {
+    expect(horizontalAccelerationMagnitude(acceleratingSamples(50), UP)).toBeUndefined();
   });
 });

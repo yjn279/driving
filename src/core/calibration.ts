@@ -1,12 +1,14 @@
 /**
  * キャリブレーションの静止・加速判定（`docs/design.md`「キャリブレーション」）。
- * 判定に使う閾値は、センサーのノイズでは満たされず、実際の停車・加速では
- * 数秒以内に満たされる値を実機での試行から選んでいる。
+ * 判定に使う閾値は、センサーのノイズでは満たされず、普通の停車・発進では
+ * 数秒以内に満たされる大きさを狙って定めている。
  *
- * `samples` は各段階を開始してからの全履歴を時刻昇順で渡す。直近 2 秒の窓を切り出し、
- * 窓の中のサンプルがすべて条件を満たす場合にだけ、その窓の平均を返す。
- * 条件を破るサンプルが窓に含まれる限り不成立のままになるため、専用のリセット処理は持たない
- * （条件が崩れてから 2 秒経つと、そのサンプルは自然に窓の外へ出て再び成立し得る）。
+ * `samples` は各段階を開始してからの全履歴を時刻昇順で渡す。判定は直近 2 秒の窓に対して行う。
+ *
+ * 静止は停車中の判定なので、窓の中のサンプルがすべて条件を満たすことを求める。
+ * 加速は走行中の判定であり、路面の凹凸やセンサーのノイズが 1 サンプルごとに乗る。
+ * サンプル 1 つずつに条件を課すと、まっすぐ加速していても外れ値 1 つで不成立になるため、
+ * 窓をならした値で判定する。
  */
 
 import { dot, magnitude, normalize, scale, subtract, type Vector3 } from './vector';
@@ -25,7 +27,7 @@ const STILLNESS_NORM_MIN = 9.81 - 0.5;
 const STILLNESS_NORM_MAX = 9.81 + 0.5;
 
 const ACCELERATION_HORIZONTAL_MIN = 1.5;
-const ACCELERATION_ANGLE_MAX_RAD = (15 * Math.PI) / 180;
+const ACCELERATION_DRIFT_MAX_RAD = (15 * Math.PI) / 180;
 
 /** 直近 `WINDOW_MS` の窓を切り出す。窓が `WINDOW_MS` に満たない場合は undefined。 */
 function windowOf(samples: readonly TimedSample[]): readonly TimedSample[] | undefined {
@@ -42,6 +44,13 @@ function average(vectors: readonly Vector3[]): Vector3 {
     { x: 0, y: 0, z: 0 },
   );
   return scale(sum, 1 / vectors.length);
+}
+
+/** 2 つのベクトルのなす角。どちらかが向きを持たない場合は最大値（180°）を返す。 */
+function angleBetween(a: Vector3, b: Vector3): number {
+  const denominator = magnitude(a) * magnitude(b);
+  if (denominator < 1e-9) return Math.PI;
+  return Math.acos(Math.min(1, Math.max(-1, dot(a, b) / denominator)));
 }
 
 function standardDeviation(values: readonly number[], mean: number): number {
@@ -80,27 +89,36 @@ export function upFromGravityAverage(gravityAverage: Vector3): Vector3 {
 }
 
 /**
- * 加速フェーズの判定。直近 2 秒間、`up` を除いた水平成分の大きさが各サンプルとも
- * 1.5 m/s² 以上で、かつ各サンプルの水平方向が窓内の平均方向から 15° 以内に収まっていれば
- * 成立し、その窓の平均（ユーザー加速度、`up` 成分を含む生の値）を返す。成立しなければ undefined。
+ * 加速フェーズの判定。直近 2 秒間について、`up` を除いた水平成分の平均が 1.5 m/s² 以上あり、
+ * かつ向きが安定していれば成立し、その窓の平均（ユーザー加速度、`up` 成分を含む生の値）を返す。
+ * 成立しなければ undefined。
+ *
+ * 向きの安定は、窓を前半と後半に分けたそれぞれの平均方向のずれで測る。
+ * 平均どうしの比較なのでノイズは打ち消し合い、曲がりながらの加速のように
+ * 向きが一方向へ動いていく場合だけを弾ける。
  */
 export function evaluateAcceleration(samples: readonly TimedSample[], up: Vector3): Vector3 | undefined {
   const window = windowOf(samples);
   if (!window) return undefined;
 
   const horizontals = window.map((s) => subtract(s.acceleration, scale(up, dot(s.acceleration, up))));
-  if (horizontals.some((h) => magnitude(h) < ACCELERATION_HORIZONTAL_MIN)) return undefined;
+  if (magnitude(average(horizontals)) < ACCELERATION_HORIZONTAL_MIN) return undefined;
 
-  const meanHorizontal = average(horizontals);
-  const meanMagnitude = magnitude(meanHorizontal);
-  if (meanMagnitude < 1e-9) return undefined;
-
-  const withinAngle = horizontals.every((h) => {
-    const cosAngle = dot(h, meanHorizontal) / (magnitude(h) * meanMagnitude);
-    const clamped = Math.min(1, Math.max(-1, cosAngle));
-    return Math.acos(clamped) <= ACCELERATION_ANGLE_MAX_RAD;
-  });
-  if (!withinAngle) return undefined;
+  const half = Math.floor(horizontals.length / 2);
+  if (half === 0) return undefined;
+  const firstHalf = average(horizontals.slice(0, half));
+  const secondHalf = average(horizontals.slice(half));
+  if (angleBetween(firstHalf, secondHalf) > ACCELERATION_DRIFT_MAX_RAD) return undefined;
 
   return average(window.map((s) => s.acceleration));
+}
+
+/** 加速フェーズの進み具合を画面へ出すための、直近 2 秒の水平成分の平均の大きさ。 */
+export function horizontalAccelerationMagnitude(
+  samples: readonly TimedSample[],
+  up: Vector3,
+): number | undefined {
+  const window = windowOf(samples);
+  if (!window) return undefined;
+  return magnitude(average(window.map((s) => subtract(s.acceleration, scale(up, dot(s.acceleration, up))))));
 }
