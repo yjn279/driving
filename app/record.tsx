@@ -10,6 +10,7 @@ import { evaluateAcceleration, evaluateStillness, upFromGravityAverage, type Tim
 import { haversineDistance, type LatLon } from '../src/core/distance';
 import {
   buildVehicleFrame,
+  GRAVITY_MS2,
   loadFromAcceleration,
   toVehicleAcceleration,
   type Load,
@@ -19,6 +20,7 @@ import type { Vector3 } from '../src/core/vector';
 import { getDatabase } from '../src/db/schema';
 import { insertAccelerations, insertLocations, type AccelerationSample, type LocationSample } from '../src/db/samples';
 import { createSession, endSession } from '../src/db/sessions';
+import { formatDistanceM } from '../src/ui/format';
 import { LoadArrow } from '../src/ui/LoadArrow';
 
 /** 加速度センサーの更新間隔。50 Hz（`docs/design.md`「データ量とサンプリング」）。 */
@@ -31,7 +33,6 @@ const LOCATION_UPDATE_INTERVAL_MS = 1000;
 const FLUSH_INTERVAL_MS = 5000;
 /** 経過時間の表示更新間隔。 */
 const ELAPSED_DISPLAY_INTERVAL_MS = 1000;
-const GRAVITY_MS2 = 9.81;
 
 const ZERO_LOAD: Load = { front: 0, right: 0 };
 
@@ -95,12 +96,6 @@ function formatElapsedTime(elapsedMs: number): string {
   const seconds = totalSeconds % 60;
   const pad = (value: number) => String(value).padStart(2, '0');
   return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
-}
-
-/** メートルを「◯ m」または「◯.◯ km」に整形する。 */
-function formatDistanceM(distanceM: number): string {
-  if (distanceM >= 1000) return `${(distanceM / 1000).toFixed(1)} km`;
-  return `${Math.round(distanceM)} m`;
 }
 
 /** 荷重の大きさを G 単位で整形する。 */

@@ -9,7 +9,7 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import MapView, { Marker, Polyline, type MapPressEvent, type Region } from 'react-native-maps';
 
 import { haversineDistance, type LatLon } from '../../src/core/distance';
-import { loadFromAcceleration } from '../../src/core/vehicle-frame';
+import { GRAVITY_MS2, loadFromAcceleration } from '../../src/core/vehicle-frame';
 import { getDatabase } from '../../src/db/schema';
 import { getAccelerations, getLocations, type AccelerationSample, type LocationSample } from '../../src/db/samples';
 import { GGDiagram, type GGDiagramPoint } from '../../src/ui/GGDiagram';
@@ -20,7 +20,6 @@ const GG_WINDOW_MS = 3000;
 /** タップ地点がルートからこれより離れていたら選択しない。 */
 const NEAREST_POINT_MAX_DISTANCE_M = 100;
 const MIN_REGION_DELTA = 0.005;
-const GRAVITY_MS2 = 9.81;
 
 type RouteSegment = {
   readonly from: LocationSample;

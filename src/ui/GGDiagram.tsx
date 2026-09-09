@@ -8,6 +8,7 @@
 import Svg, { Circle, Line, Text as SvgText } from 'react-native-svg';
 
 import type { Load } from '../core/vehicle-frame';
+import { MAX_LOAD_G, toLoadG } from './load-plot';
 
 export type GGDiagramPoint = {
   readonly t: number;
@@ -22,9 +23,6 @@ type Props = {
   readonly size?: number;
 };
 
-const GRAVITY = 9.81;
-/** この大きさ（g）で軌跡が円の縁いっぱいまで伸びる。 */
-const MAX_LOAD_G = 1;
 const GRID_RING_COUNT = 4;
 const GRID_COLOR = '#e1e0d9';
 const AXIS_LABEL_COLOR = '#898781';
@@ -43,8 +41,7 @@ export function GGDiagram({ points, currentT, size = 240 }: Props) {
   const plotRadius = center - 24;
 
   const toPosition = (load: Load) => {
-    const frontG = load.front / GRAVITY;
-    const rightG = load.right / GRAVITY;
+    const { frontG, rightG } = toLoadG(load);
     // 円の外へはみ出さないよう、大きさが MAX_LOAD_G を超える分は向きを保ったまま縮める。
     const magnitudeG = Math.hypot(frontG, rightG);
     const clamp = magnitudeG > MAX_LOAD_G ? MAX_LOAD_G / magnitudeG : 1;

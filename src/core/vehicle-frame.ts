@@ -7,6 +7,9 @@
 
 import { cross, dot, normalize, scale, subtract, type Vector3 } from './vector';
 
+/** 重力加速度。m/s²。荷重・加速度を g 単位へ換算する基準値。 */
+export const GRAVITY_MS2 = 9.81;
+
 export type VehicleFrame = {
   readonly forward: Vector3;
   readonly right: Vector3;

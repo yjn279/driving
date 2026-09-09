@@ -4,6 +4,7 @@ import { Link, Stack, useFocusEffect } from 'expo-router';
 
 import { getDatabase } from '../src/db/schema';
 import { deleteSession, deleteUnfinishedSessions, listSessions, type SessionSummary } from '../src/db/sessions';
+import { formatDistanceM } from '../src/ui/format';
 
 /** ミリ秒を「◯時間◯分」のような表示へ整形する。 */
 function formatDuration(durationMs: number): string {
@@ -14,12 +15,6 @@ function formatDuration(durationMs: number): string {
   if (hours > 0) return `${hours}時間${minutes}分`;
   if (minutes > 0) return `${minutes}分${seconds}秒`;
   return `${seconds}秒`;
-}
-
-/** メートルを「◯ m」または「◯.◯ km」に整形する。 */
-function formatDistance(distanceM: number): string {
-  if (distanceM >= 1000) return `${(distanceM / 1000).toFixed(1)} km`;
-  return `${Math.round(distanceM)} m`;
 }
 
 /** epoch ミリ秒を「YYYY/MM/DD HH:mm」に整形する。 */
@@ -65,7 +60,7 @@ export default function IndexScreen() {
         </View>
         <View style={styles.summaryItem}>
           <Text style={styles.summaryLabel}>累計走行距離</Text>
-          <Text style={styles.summaryValue}>{formatDistance(summary?.totalDistanceM ?? 0)}</Text>
+          <Text style={styles.summaryValue}>{formatDistanceM(summary?.totalDistanceM ?? 0)}</Text>
         </View>
       </View>
 
@@ -84,7 +79,7 @@ export default function IndexScreen() {
                 <Pressable style={styles.rowInfo}>
                   <Text style={styles.rowDate}>{formatDateTime(item.startedAt)}</Text>
                   <Text style={styles.rowDetail}>
-                    {formatDuration(item.durationMs)} ・ {formatDistance(item.distanceM)}
+                    {formatDuration(item.durationMs)} ・ {formatDistanceM(item.distanceM)}
                   </Text>
                 </Pressable>
               </Link>

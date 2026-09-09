@@ -6,23 +6,20 @@
 import Svg, { Circle, Line, Polygon, Text as SvgText } from 'react-native-svg';
 
 import type { Load } from '../core/vehicle-frame';
+import { MAX_LOAD_G, toLoadG } from './load-plot';
 
 type Props = {
   readonly load: Load;
   readonly size?: number;
 };
 
-const GRAVITY = 9.81;
-/** この大きさ（g）で矢印が円の縁いっぱいまで伸びる。 */
-const MAX_LOAD_G = 1;
 const ARROWHEAD_SIZE = 10;
 
 export function LoadArrow({ load, size = 220 }: Props) {
   const center = size / 2;
   const plotRadius = center - 24;
 
-  const frontG = load.front / GRAVITY;
-  const rightG = load.right / GRAVITY;
+  const { frontG, rightG } = toLoadG(load);
   const magnitudeG = Math.sqrt(frontG * frontG + rightG * rightG);
   const tipRadius = Math.min(magnitudeG, MAX_LOAD_G) * plotRadius;
   // 前方向を角度 0 とし、右方向へ回るほど角度が増える向きに揃える。
