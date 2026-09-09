@@ -7,6 +7,8 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import type { SQLiteDatabase } from 'expo-sqlite';
 
 import {
+  ACCELERATION_HORIZONTAL_MIN,
+  ACCELERATION_WINDOW_MS,
   evaluateAcceleration,
   evaluateStillness,
   horizontalAccelerationMagnitude,
@@ -44,8 +46,6 @@ const ELAPSED_DISPLAY_INTERVAL_MS = 1000;
  * 届いたサンプルごとに描き直すと、車載で長時間動かしたときの発熱と電池の消耗が増える。
  */
 const LIVE_DISPLAY_INTERVAL_MS = 100;
-/** 加速フェーズが成立する水平加速度の目安。画面の案内に出す（判定の実体は `evaluateAcceleration`）。 */
-const ACCELERATION_HINT_MS2 = 1.5;
 
 const ZERO_LOAD: Load = { front: 0, right: 0 };
 
@@ -430,8 +430,10 @@ export default function RecordScreen() {
             {horizontalMs2 === undefined ? '—' : `${horizontalMs2.toFixed(1)} m/s²`}
           </Text>
           <Text style={styles.hint}>
-            {ACCELERATION_HINT_MS2.toFixed(1)} m/s² 以上をまっすぐ 2 秒続けると、次へ進みます
+            {ACCELERATION_HORIZONTAL_MIN.toFixed(1)} m/s² 以上をまっすぐ {ACCELERATION_WINDOW_MS / 1000} 秒続けると、
+            次へ進みます
           </Text>
+          <Text style={styles.hint}>時速 10 km まで 10 m ほど、ゆっくり進むだけで足ります</Text>
         </View>
       )}
 

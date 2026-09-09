@@ -3,7 +3,7 @@
  * 判定に使う閾値は、センサーのノイズでは満たされず、普通の停車・発進では
  * 数秒以内に満たされる大きさを狙って定めている。
  *
- * `samples` は各段階を開始してからの全履歴を時刻昇順で渡す。判定は直近 2 秒の窓に対して行う。
+ * `samples` は各段階を開始してからの全履歴を時刻昇順で渡す。判定は直近の一定時間の窓に対して行う。
  *
  * 静止は停車中の判定なので、窓の中のサンプルがすべて条件を満たすことを求める。
  * 加速は走行中の判定であり、路面の凹凸やセンサーのノイズが 1 サンプルごとに乗る。
@@ -19,21 +19,37 @@ export type TimedSample = {
   readonly acceleration: Vector3;
 };
 
-/** 判定に用いる窓の長さ。先頭と末尾の時刻差がこれ以上でなければ不成立とする。 */
-const WINDOW_MS = 2000;
+/** 静止の判定に用いる窓の長さ。停車中なので長く取っても待ち時間の負担にならない。 */
+const STILLNESS_WINDOW_MS = 2000;
 
 const STILLNESS_STD_DEV_MAX = 0.15;
 const STILLNESS_NORM_MIN = 9.81 - 0.5;
 const STILLNESS_NORM_MAX = 9.81 + 0.5;
 
-const ACCELERATION_HORIZONTAL_MIN = 1.5;
-const ACCELERATION_DRIFT_MAX_RAD = (15 * Math.PI) / 180;
+/**
+ * 加速の判定に用いる窓の長さと、水平成分の平均に求める大きさ。
+ *
+ * 時速 10 km まで 10 m ほど走る、駐車場でも行える短く緩やかな発進で成立することを狙う。
+ * この動きは 0.4 m/s² 前後の加速が数秒続く形になるため、窓を 1 秒、閾値を 0.5 m/s² とする。
+ *
+ * 静止フェーズの直後、つまり停車状態から動き出したところで判定するため、
+ * 閾値を低くしても減速を「前」と取り違える恐れは小さい。停止状態から減速は起こらず、
+ * 発進の加速が先に条件を満たすため。
+ */
+export const ACCELERATION_WINDOW_MS = 1000;
+export const ACCELERATION_HORIZONTAL_MIN = 0.5;
 
-/** 直近 `WINDOW_MS` の窓を切り出す。窓が `WINDOW_MS` に満たない場合は undefined。 */
-function windowOf(samples: readonly TimedSample[]): readonly TimedSample[] | undefined {
+/**
+ * 前半と後半の平均方向に許すずれ。
+ * 加速が緩いと 1 サンプルあたりのノイズが相対的に大きくなり、
+ * 半分ずつの平均方向にも揺らぎが残る。まっすぐ走っているのに弾かれないよう広めに取る。
+ */
+const ACCELERATION_DRIFT_MAX_RAD = (30 * Math.PI) / 180;
+
+/** 直近 `windowMs` の窓を切り出す。履歴が窓の長さに満たない場合は undefined。 */
+function windowOf(samples: readonly TimedSample[], windowMs: number): readonly TimedSample[] | undefined {
   if (samples.length === 0) return undefined;
-  const latestT = samples[samples.length - 1].t;
-  const windowStart = latestT - WINDOW_MS;
+  const windowStart = samples[samples.length - 1].t - windowMs;
   if (samples[0].t > windowStart) return undefined;
   return samples.filter((sample) => sample.t >= windowStart);
 }
@@ -64,7 +80,7 @@ function standardDeviation(values: readonly number[], mean: number): number {
  * その窓の平均（重力ベクトル）を返す。成立しなければ undefined。
  */
 export function evaluateStillness(samples: readonly TimedSample[]): Vector3 | undefined {
-  const window = windowOf(samples);
+  const window = windowOf(samples, STILLNESS_WINDOW_MS);
   if (!window) return undefined;
 
   const vectors = window.map((s) => s.acceleration);
@@ -89,7 +105,7 @@ export function upFromGravityAverage(gravityAverage: Vector3): Vector3 {
 }
 
 /**
- * 加速フェーズの判定。直近 2 秒間について、`up` を除いた水平成分の平均が 1.5 m/s² 以上あり、
+ * 加速フェーズの判定。直近 1 秒間について、`up` を除いた水平成分の平均が 0.5 m/s² 以上あり、
  * かつ向きが安定していれば成立し、その窓の平均（ユーザー加速度、`up` 成分を含む生の値）を返す。
  * 成立しなければ undefined。
  *
@@ -98,7 +114,7 @@ export function upFromGravityAverage(gravityAverage: Vector3): Vector3 {
  * 向きが一方向へ動いていく場合だけを弾ける。
  */
 export function evaluateAcceleration(samples: readonly TimedSample[], up: Vector3): Vector3 | undefined {
-  const window = windowOf(samples);
+  const window = windowOf(samples, ACCELERATION_WINDOW_MS);
   if (!window) return undefined;
 
   const horizontals = window.map((s) => subtract(s.acceleration, scale(up, dot(s.acceleration, up))));
@@ -113,12 +129,12 @@ export function evaluateAcceleration(samples: readonly TimedSample[], up: Vector
   return average(window.map((s) => s.acceleration));
 }
 
-/** 加速フェーズの進み具合を画面へ出すための、直近 2 秒の水平成分の平均の大きさ。 */
+/** 加速フェーズの進み具合を画面へ出すための、直近 1 秒の水平成分の平均の大きさ。 */
 export function horizontalAccelerationMagnitude(
   samples: readonly TimedSample[],
   up: Vector3,
 ): number | undefined {
-  const window = windowOf(samples);
+  const window = windowOf(samples, ACCELERATION_WINDOW_MS);
   if (!window) return undefined;
   return magnitude(average(window.map((s) => subtract(s.acceleration, scale(up, dot(s.acceleration, up))))));
 }
