@@ -4,6 +4,7 @@ import { Link, Stack, useFocusEffect } from 'expo-router';
 
 import { getDatabase } from '../src/db/schema';
 import { deleteSession, deleteUnfinishedSessions, listSessions, type SessionSummary } from '../src/db/sessions';
+import { runCancellable } from '../src/hooks/run-cancellable';
 import { formatDistanceM } from '../src/ui/format';
 
 /** ミリ秒を「◯時間◯分」のような表示へ整形する。 */
@@ -27,25 +28,30 @@ function formatDateTime(epochMs: number): string {
 export default function IndexScreen() {
   const [summary, setSummary] = useState<SessionSummary | null>(null);
 
-  const reload = useCallback(async () => {
-    const db = await getDatabase();
-    // アプリが落ちるなどして停止処理が走らなかったセッションは、走行時間・距離が 0 のまま
-    // 累計を歪めるため、一覧を開くたびに削除する。
-    await deleteUnfinishedSessions(db);
-    setSummary(await listSessions(db));
-  }, []);
-
   useFocusEffect(
-    useCallback(() => {
-      reload();
-    }, [reload]),
+    useCallback(
+      () =>
+        runCancellable(async (isCancelled) => {
+          const db = await getDatabase();
+          // アプリが落ちるなどして停止処理が走らなかったセッションは、走行時間・距離が 0 のまま
+          // 累計を歪めるため、一覧を開くたびに削除する。
+          await deleteUnfinishedSessions(db);
+          const nextSummary = await listSessions(db);
+          if (!isCancelled()) setSummary(nextSummary);
+        }, (error) => console.error('一覧の読み込みに失敗しました', error)),
+      [],
+    ),
   );
 
   const handleDelete = useCallback(
     async (sessionId: number) => {
-      const db = await getDatabase();
-      await deleteSession(db, sessionId);
-      setSummary(await listSessions(db));
+      try {
+        const db = await getDatabase();
+        await deleteSession(db, sessionId);
+        setSummary(await listSessions(db));
+      } catch (error) {
+        console.error('削除に失敗しました', error);
+      }
     },
     [],
   );

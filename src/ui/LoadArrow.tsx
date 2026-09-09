@@ -3,10 +3,11 @@
  * 縦軸の上を前荷重、横軸の右を右荷重とする（`docs/design.md`「座標系と荷重の定義」）。
  */
 
-import Svg, { Circle, Line, Polygon, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, Line, Polygon } from 'react-native-svg';
 
 import type { Load } from '../core/vehicle-frame';
-import { MAX_LOAD_G, toLoadG } from './load-plot';
+import { MAX_LOAD_G, plotGeometry, toLoadG } from './load-plot';
+import { PlotAxisLabels } from './PlotAxisLabels';
 
 type Props = {
   readonly load: Load;
@@ -14,10 +15,10 @@ type Props = {
 };
 
 const ARROWHEAD_SIZE = 10;
+const AXIS_LABEL_COLOR = '#666666';
 
 export function LoadArrow({ load, size = 220 }: Props) {
-  const center = size / 2;
-  const plotRadius = center - 24;
+  const { center, plotRadius } = plotGeometry(size);
 
   const { frontG, rightG } = toLoadG(load);
   const magnitudeG = Math.sqrt(frontG * frontG + rightG * rightG);
@@ -38,18 +39,7 @@ export function LoadArrow({ load, size = 220 }: Props) {
   return (
     <Svg width={size} height={size}>
       <Circle cx={center} cy={center} r={plotRadius} stroke="#cccccc" strokeWidth={1} fill="none" />
-      <SvgText x={center} y={16} fontSize={14} fill="#666666" textAnchor="middle">
-        前
-      </SvgText>
-      <SvgText x={center} y={size - 6} fontSize={14} fill="#666666" textAnchor="middle">
-        後
-      </SvgText>
-      <SvgText x={14} y={center + 5} fontSize={14} fill="#666666" textAnchor="middle">
-        左
-      </SvgText>
-      <SvgText x={size - 14} y={center + 5} fontSize={14} fill="#666666" textAnchor="middle">
-        右
-      </SvgText>
+      <PlotAxisLabels center={center} size={size} color={AXIS_LABEL_COLOR} />
       <Line x1={center} y1={center} x2={backX} y2={backY} stroke="#1a73e8" strokeWidth={4} />
       <Polygon
         points={`${tipX},${tipY} ${backX + perpX},${backY + perpY} ${backX - perpX},${backY - perpY}`}

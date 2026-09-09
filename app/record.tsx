@@ -29,7 +29,7 @@ const SENSOR_UPDATE_INTERVAL_MS = 20;
 const SAMPLE_HISTORY_MS = 3000;
 /** 位置情報の取得間隔。1 Hz（`docs/design.md`「データ量とサンプリング」）。 */
 const LOCATION_UPDATE_INTERVAL_MS = 1000;
-/** メモリに積んだ加速度・位置情報をまとめて書き込む間隔（計画「判定に使う数値」）。 */
+/** メモリに積んだ加速度・位置情報をまとめて書き込む間隔。書き込み頻度による負荷を抑えつつ、異常終了時に失われる量を小さく保つ。 */
 const FLUSH_INTERVAL_MS = 5000;
 /** 経過時間の表示更新間隔。 */
 const ELAPSED_DISPLAY_INTERVAL_MS = 1000;
@@ -47,7 +47,8 @@ type Phase =
   | { readonly kind: 'stillness' }
   | { readonly kind: 'acceleration'; readonly gravityAverage: Vector3 }
   | { readonly kind: 'confirm'; readonly frame: VehicleFrame }
-  | { readonly kind: 'recording'; readonly frame: VehicleFrame };
+  | { readonly kind: 'recording'; readonly frame: VehicleFrame }
+  | { readonly kind: 'recording-failed'; readonly reason: string };
 
 /** 判定窓に使う直近サンプルだけを残し、段階が長引いても履歴が際限なく増えないようにする。 */
 function pruneSamples(samples: readonly TimedSample[]): readonly TimedSample[] {
@@ -73,19 +74,39 @@ type RecordingSession = {
   locationSubscription: Location.LocationSubscription | undefined;
   flushTimer: ReturnType<typeof setInterval> | undefined;
   elapsedTimer: ReturnType<typeof setInterval> | undefined;
+  /** 直近の書き込みの完了を表す。書き込みは必ずこれに数珠つなぎして直列に行う。 */
+  flushChain: Promise<void>;
   stopped: boolean;
 };
 
-/** バッファに積んだ加速度・位置情報をまとめて 1 回ずつ書き込み、バッファを空にする。 */
+/**
+ * バッファに積んだ加速度・位置情報をまとめて 1 回ずつ書き込み、バッファを空にする。
+ * 書き込みに失敗した場合、取り出した分をバッファへ戻して次回の書き込みで再送する。
+ */
 async function flushBuffers(session: RecordingSession): Promise<void> {
   const accelerations = session.accelerationBuffer;
   const locations = session.locationBuffer;
   session.accelerationBuffer = [];
   session.locationBuffer = [];
-  await Promise.all([
-    insertAccelerations(session.db, session.sessionId, accelerations),
-    insertLocations(session.db, session.sessionId, locations),
-  ]);
+  try {
+    // 同じ接続で 2 つの書き込みトランザクションを同時に走らせると競合するため、順に行う。
+    await insertAccelerations(session.db, session.sessionId, accelerations);
+    await insertLocations(session.db, session.sessionId, locations);
+  } catch (error) {
+    session.accelerationBuffer = [...accelerations, ...session.accelerationBuffer];
+    session.locationBuffer = [...locations, ...session.locationBuffer];
+    throw error;
+  }
+}
+
+/**
+ * 書き込みを `flushChain` に数珠つなぎし、常に前の書き込みの後に始まるようにする。
+ * タイマー由来の書き込みと「停止して保存」の最終書き込みが同時に走ることを防ぐ。
+ */
+function scheduleFlush(session: RecordingSession): Promise<void> {
+  const next = session.flushChain.catch(() => undefined).then(() => flushBuffers(session));
+  session.flushChain = next;
+  return next;
 }
 
 /** 経過時間を「MM:SS」(1 時間以上は「HH:MM:SS」)に整形する。 */
@@ -110,6 +131,7 @@ export default function RecordScreen() {
   const [liveLoad, setLiveLoad] = useState<Load>(ZERO_LOAD);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [distanceM, setDistanceM] = useState(0);
+  const [stopError, setStopError] = useState<string | undefined>(undefined);
   const recordingRef = useRef<RecordingSession | null>(null);
 
   // 画面に入った時点で位置情報と DeviceMotion の権限をまとめて要求する。
@@ -202,72 +224,85 @@ export default function RecordScreen() {
     let cancelled = false;
 
     (async () => {
-      const startedAt = Date.now();
-      const db = await getDatabase();
-      const sessionId = await createSession(db, startedAt);
-      if (cancelled) return;
+      try {
+        const startedAt = Date.now();
+        const db = await getDatabase();
+        const sessionId = await createSession(db, startedAt);
+        if (cancelled) return;
 
-      await activateKeepAwakeAsync();
-      if (cancelled) {
-        await deactivateKeepAwake();
-        return;
+        await activateKeepAwakeAsync();
+        if (cancelled) {
+          await deactivateKeepAwake();
+          return;
+        }
+
+        const session: RecordingSession = {
+          db,
+          sessionId,
+          startedAt,
+          accelerationBuffer: [],
+          locationBuffer: [],
+          lastLocation: undefined,
+          distanceM: 0,
+          motionSubscription: undefined,
+          locationSubscription: undefined,
+          flushTimer: undefined,
+          elapsedTimer: undefined,
+          flushChain: Promise.resolve(),
+          stopped: false,
+        };
+        recordingRef.current = session;
+
+        session.motionSubscription = DeviceMotion.addListener((measurement) => {
+          if (!measurement.acceleration) return;
+          const vehicleAcceleration = toVehicleAcceleration(phase.frame, measurement.acceleration);
+          session.accelerationBuffer.push({ t: Date.now(), ax: vehicleAcceleration.ax, ay: vehicleAcceleration.ay });
+          setLiveLoad(loadFromAcceleration(vehicleAcceleration));
+        });
+
+        // 位置情報は 1 Hz で取得する。ネイティブ側の通知がこれより頻繁でも、
+        // 直前のサンプルからの経過時間で間引いて 1 Hz に揃える。
+        let lastLocationAt: number | undefined;
+        session.locationSubscription = await Location.watchPositionAsync(
+          { timeInterval: LOCATION_UPDATE_INTERVAL_MS, distanceInterval: 0 },
+          (location) => {
+            if (lastLocationAt !== undefined && location.timestamp - lastLocationAt < LOCATION_UPDATE_INTERVAL_MS) {
+              return;
+            }
+            lastLocationAt = location.timestamp;
+
+            const point: LatLon = { lat: location.coords.latitude, lon: location.coords.longitude };
+            if (session.lastLocation) {
+              session.distanceM += haversineDistance(session.lastLocation, point);
+              setDistanceM(session.distanceM);
+            }
+            session.lastLocation = point;
+            session.locationBuffer.push({ t: location.timestamp, lat: point.lat, lon: point.lon });
+          },
+        );
+        if (cancelled) {
+          session.locationSubscription.remove();
+          return;
+        }
+
+        session.flushTimer = setInterval(() => {
+          scheduleFlush(session).catch((error) => {
+            console.error('走行データの書き込みに失敗しました', error);
+          });
+        }, FLUSH_INTERVAL_MS);
+
+        session.elapsedTimer = setInterval(() => {
+          setElapsedMs(Date.now() - session.startedAt);
+        }, ELAPSED_DISPLAY_INTERVAL_MS);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('記録の開始に失敗しました', error);
+          setPhase({
+            kind: 'recording-failed',
+            reason: '記録を開始できませんでした。電波状況の良い場所でもう一度お試しください。',
+          });
+        }
       }
-
-      const session: RecordingSession = {
-        db,
-        sessionId,
-        startedAt,
-        accelerationBuffer: [],
-        locationBuffer: [],
-        lastLocation: undefined,
-        distanceM: 0,
-        motionSubscription: undefined,
-        locationSubscription: undefined,
-        flushTimer: undefined,
-        elapsedTimer: undefined,
-        stopped: false,
-      };
-      recordingRef.current = session;
-
-      session.motionSubscription = DeviceMotion.addListener((measurement) => {
-        if (!measurement.acceleration) return;
-        const vehicleAcceleration = toVehicleAcceleration(phase.frame, measurement.acceleration);
-        session.accelerationBuffer.push({ t: Date.now(), ax: vehicleAcceleration.ax, ay: vehicleAcceleration.ay });
-        setLiveLoad(loadFromAcceleration(vehicleAcceleration));
-      });
-
-      // 位置情報は 1 Hz で取得する。ネイティブ側の通知がこれより頻繁でも、
-      // 直前のサンプルからの経過時間で間引いて 1 Hz に揃える。
-      let lastLocationAt: number | undefined;
-      session.locationSubscription = await Location.watchPositionAsync(
-        { timeInterval: LOCATION_UPDATE_INTERVAL_MS, distanceInterval: 0 },
-        (location) => {
-          if (lastLocationAt !== undefined && location.timestamp - lastLocationAt < LOCATION_UPDATE_INTERVAL_MS) {
-            return;
-          }
-          lastLocationAt = location.timestamp;
-
-          const point: LatLon = { lat: location.coords.latitude, lon: location.coords.longitude };
-          if (session.lastLocation) {
-            session.distanceM += haversineDistance(session.lastLocation, point);
-            setDistanceM(session.distanceM);
-          }
-          session.lastLocation = point;
-          session.locationBuffer.push({ t: location.timestamp, lat: point.lat, lon: point.lon });
-        },
-      );
-      if (cancelled) {
-        session.locationSubscription.remove();
-        return;
-      }
-
-      session.flushTimer = setInterval(() => {
-        flushBuffers(session);
-      }, FLUSH_INTERVAL_MS);
-
-      session.elapsedTimer = setInterval(() => {
-        setElapsedMs(Date.now() - session.startedAt);
-      }, ELAPSED_DISPLAY_INTERVAL_MS);
     })();
 
     return () => {
@@ -297,10 +332,11 @@ export default function RecordScreen() {
   }, [router]);
 
   // 停止と保存。バッファに残ったサンプルも書き込んでからセッションを確定し、一覧へ戻る。
+  // 書き込みに失敗した場合は完了状態にせず、再度「停止して保存」を押せばやり直せるようにする。
   const handleStop = useCallback(async () => {
     const session = recordingRef.current;
     if (!session || session.stopped) return;
-    session.stopped = true;
+    setStopError(undefined);
 
     if (session.flushTimer) clearInterval(session.flushTimer);
     if (session.elapsedTimer) clearInterval(session.elapsedTimer);
@@ -309,8 +345,15 @@ export default function RecordScreen() {
 
     const endedAt = Date.now();
     const durationMs = endedAt - session.startedAt;
-    await flushBuffers(session);
-    await endSession(session.db, session.sessionId, endedAt, durationMs, session.distanceM);
+    try {
+      await scheduleFlush(session);
+      await endSession(session.db, session.sessionId, endedAt, durationMs, session.distanceM);
+    } catch (error) {
+      console.error('記録の保存に失敗しました', error);
+      setStopError('保存に失敗しました。もう一度「停止して保存」を押してください。');
+      return;
+    }
+    session.stopped = true;
     await deactivateKeepAwake();
 
     router.replace('/');
@@ -327,6 +370,15 @@ export default function RecordScreen() {
       )}
 
       {phase.kind === 'permission-denied' && (
+        <View style={styles.center}>
+          <Text style={styles.message}>{phase.reason}</Text>
+          <Pressable style={styles.primaryButton} onPress={handleBackToList}>
+            <Text style={styles.primaryButtonLabel}>一覧へ戻る</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {phase.kind === 'recording-failed' && (
         <View style={styles.center}>
           <Text style={styles.message}>{phase.reason}</Text>
           <Pressable style={styles.primaryButton} onPress={handleBackToList}>
@@ -378,6 +430,7 @@ export default function RecordScreen() {
           <Pressable style={styles.stopButton} onPress={handleStop}>
             <Text style={styles.stopButtonLabel}>停止して保存</Text>
           </Pressable>
+          {stopError && <Text style={styles.hint}>{stopError}</Text>}
         </View>
       )}
     </View>

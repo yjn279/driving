@@ -6,9 +6,8 @@
 
 Expo（React Native / TypeScript）で実装し、Expo Go から起動する。
 
-要件の元文書は Swift / SwiftUI を指定していたが、動作確認の手段が Expo Go に限られる。
-Expo Go は Swift で書いたアプリを読み込めないため、Expo Go で確認できることを優先し、
-Expo Go に同梱されているモジュールだけで組み立てられる構成を選ぶ。
+動作確認の手段が Expo Go に限られるため、Expo Go に同梱されているモジュールだけで
+組み立てられる構成を選ぶ。
 
 | 用途 | 採用 |
 | :-- | :-- |

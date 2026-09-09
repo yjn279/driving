@@ -12,10 +12,11 @@ import { haversineDistance, type LatLon } from '../../src/core/distance';
 import { GRAVITY_MS2, loadFromAcceleration } from '../../src/core/vehicle-frame';
 import { getDatabase } from '../../src/db/schema';
 import { getAccelerations, getLocations, type AccelerationSample, type LocationSample } from '../../src/db/samples';
+import { runCancellable } from '../../src/hooks/run-cancellable';
 import { GGDiagram, type GGDiagramPoint } from '../../src/ui/GGDiagram';
 import { colorForLoadG, loadColorLegend } from '../../src/ui/g-color';
 
-/** G-G ダイアグラムに描く軌跡の時間窓。選択時刻の前後 3 秒（計画「G-G ダイアグラムの時間窓」）。 */
+/** G-G ダイアグラムに描く軌跡の時間窓。選択時刻の前後 3 秒。荷重の移り変わりが読み取れる長さとして選んだ。 */
 const GG_WINDOW_MS = 3000;
 /** タップ地点がルートからこれより離れていたら選択しない。 */
 const NEAREST_POINT_MAX_DISTANCE_M = 100;
@@ -30,12 +31,17 @@ type RouteSegment = {
 /** ルート全体を囲む範囲を求める。地図の初期表示に使う。 */
 function regionForLocations(locations: readonly LocationSample[]): Region | undefined {
   if (locations.length === 0) return undefined;
-  const lats = locations.map((location) => location.lat);
-  const lons = locations.map((location) => location.lon);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLon = Math.min(...lons);
-  const maxLon = Math.max(...lons);
+  // 長時間の走行で点数が多くても引数の上限に達しないよう、スプレッドではなく for ループで求める。
+  let minLat = locations[0].lat;
+  let maxLat = locations[0].lat;
+  let minLon = locations[0].lon;
+  let maxLon = locations[0].lon;
+  for (const location of locations) {
+    if (location.lat < minLat) minLat = location.lat;
+    if (location.lat > maxLat) maxLat = location.lat;
+    if (location.lon < minLon) minLon = location.lon;
+    if (location.lon > maxLon) maxLon = location.lon;
+  }
   return {
     latitude: (minLat + maxLat) / 2,
     longitude: (minLon + maxLon) / 2,
@@ -53,8 +59,9 @@ function averageLoadG(samples: readonly AccelerationSample[]): number {
 
 /**
  * 位置情報の隣り合う 2 点ごとに区間を作り、その時間範囲の加速度から色を決める。
- * 区間ごとに時刻範囲を指定して取り出し、使い終えたら次の区間へ進むため、
- * セッション全件の加速度が同時にメモリへ載ることはない。
+ * 区間は互いに重ならない時刻範囲（下限のみ含む）を指定して取り出すため、
+ * 境界上のサンプルが 2 区間で二重に数えられることはない。区間ごとに取り出し、
+ * 使い終えたら次の区間へ進むため、セッション全件の加速度が同時にメモリへ載ることはない。
  */
 async function buildRouteSegments(
   sessionId: number,
@@ -65,7 +72,7 @@ async function buildRouteSegments(
   for (let i = 0; i < locations.length - 1; i += 1) {
     const from = locations[i];
     const to = locations[i + 1];
-    const samples = await getAccelerations(db, sessionId, from.t, to.t);
+    const samples = await getAccelerations(db, sessionId, from.t, to.t - 1);
     segments.push({ from, to, color: colorForLoadG(averageLoadG(samples)) });
   }
   return segments;
@@ -85,6 +92,7 @@ function findNearestLocation(
 export default function SessionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const sessionId = Number(id);
+  const validSessionId = Number.isFinite(sessionId) ? sessionId : undefined;
 
   const [locations, setLocations] = useState<readonly LocationSample[]>([]);
   const [segments, setSegments] = useState<readonly RouteSegment[]>([]);
@@ -94,39 +102,40 @@ export default function SessionDetailScreen() {
 
   // ルートと区間ごとの色は、画面を開いたときに一度だけ組み立てる。
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
+    if (validSessionId === undefined) {
+      setLoadingRoute(false);
+      return;
+    }
+    return runCancellable(async (isCancelled) => {
       const db = await getDatabase();
-      const locs = await getLocations(db, sessionId);
-      if (cancelled) return;
+      const locs = await getLocations(db, validSessionId);
+      if (isCancelled()) return;
       setLocations(locs);
-      const built = await buildRouteSegments(sessionId, locs);
-      if (cancelled) return;
+      const built = await buildRouteSegments(validSessionId, locs);
+      if (isCancelled()) return;
       setSegments(built);
       setLoadingRoute(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
+    }, (error) => console.error('ルートの読み込みに失敗しました', error));
+  }, [validSessionId]);
 
   // 選択地点が変わるたびに、その前後 3 秒だけを時刻範囲で取り出す。
   useEffect(() => {
-    if (!selected) {
+    if (!selected || validSessionId === undefined) {
       setGgPoints([]);
       return;
     }
-    let cancelled = false;
-    (async () => {
+    return runCancellable(async (isCancelled) => {
       const db = await getDatabase();
-      const samples = await getAccelerations(db, sessionId, selected.t - GG_WINDOW_MS, selected.t + GG_WINDOW_MS);
-      if (cancelled) return;
+      const samples = await getAccelerations(
+        db,
+        validSessionId,
+        selected.t - GG_WINDOW_MS,
+        selected.t + GG_WINDOW_MS,
+      );
+      if (isCancelled()) return;
       setGgPoints(samples.map((sample) => ({ t: sample.t, load: loadFromAcceleration(sample) })));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [selected, sessionId]);
+    }, (error) => console.error('荷重の軌跡の読み込みに失敗しました', error));
+  }, [selected, validSessionId]);
 
   const handleMapPress = useCallback(
     (event: MapPressEvent) => {
@@ -149,7 +158,13 @@ export default function SessionDetailScreen() {
         </View>
       )}
 
-      {!loadingRoute && !region && (
+      {!loadingRoute && validSessionId === undefined && (
+        <View style={styles.center}>
+          <Text style={styles.message}>セッションが見つかりません</Text>
+        </View>
+      )}
+
+      {!loadingRoute && validSessionId !== undefined && !region && (
         <View style={styles.center}>
           <Text style={styles.message}>位置情報が記録されていません</Text>
         </View>

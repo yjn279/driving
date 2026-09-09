@@ -45,8 +45,16 @@ async function openDatabase(): Promise<SQLiteDatabase> {
   return db;
 }
 
-/** アプリ全体で共有する接続を返す。初回呼び出しでだけ開いて表と索引を用意する。 */
+/**
+ * アプリ全体で共有する接続を返す。初回呼び出しでだけ開いて表と索引を用意する。
+ * 初回の接続に失敗した場合は結果をキャッシュせず、次回の呼び出しで開き直す。
+ */
 export function getDatabase(): Promise<SQLiteDatabase> {
-  if (!database) database = openDatabase();
+  if (!database) {
+    database = openDatabase().catch((error) => {
+      database = undefined;
+      throw error;
+    });
+  }
   return database;
 }

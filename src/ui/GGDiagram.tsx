@@ -5,10 +5,11 @@
  * 最大 G の数値は表示しない（強調表示やランキング的な演出を避ける）。
  */
 
-import Svg, { Circle, Line, Text as SvgText } from 'react-native-svg';
+import Svg, { Circle, Line } from 'react-native-svg';
 
 import type { Load } from '../core/vehicle-frame';
-import { MAX_LOAD_G, toLoadG } from './load-plot';
+import { MAX_LOAD_G, plotGeometry, toLoadG } from './load-plot';
+import { PlotAxisLabels } from './PlotAxisLabels';
 
 export type GGDiagramPoint = {
   readonly t: number;
@@ -37,8 +38,7 @@ function mixColor(from: readonly [number, number, number], to: readonly [number,
 }
 
 export function GGDiagram({ points, currentT, size = 240 }: Props) {
-  const center = size / 2;
-  const plotRadius = center - 24;
+  const { center, plotRadius } = plotGeometry(size);
 
   const toPosition = (load: Load) => {
     const { frontG, rightG } = toLoadG(load);
@@ -67,18 +67,7 @@ export function GGDiagram({ points, currentT, size = 240 }: Props) {
       <Line x1={center} y1={center - plotRadius} x2={center} y2={center + plotRadius} stroke={GRID_COLOR} strokeWidth={1} />
       <Line x1={center - plotRadius} y1={center} x2={center + plotRadius} y2={center} stroke={GRID_COLOR} strokeWidth={1} />
 
-      <SvgText x={center} y={16} fontSize={14} fill={AXIS_LABEL_COLOR} textAnchor="middle">
-        前
-      </SvgText>
-      <SvgText x={center} y={size - 6} fontSize={14} fill={AXIS_LABEL_COLOR} textAnchor="middle">
-        後
-      </SvgText>
-      <SvgText x={14} y={center + 5} fontSize={14} fill={AXIS_LABEL_COLOR} textAnchor="middle">
-        左
-      </SvgText>
-      <SvgText x={size - 14} y={center + 5} fontSize={14} fill={AXIS_LABEL_COLOR} textAnchor="middle">
-        右
-      </SvgText>
+      <PlotAxisLabels center={center} size={size} color={AXIS_LABEL_COLOR} />
 
       {points.slice(1).map((point, i) => {
         const from = toPosition(points[i].load);
