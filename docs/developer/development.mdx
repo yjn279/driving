@@ -2,7 +2,7 @@
 title: "開発環境"
 ---
 
-## 開発環境
+## 実行環境
 
 Expo（React Native / TypeScript）で実装し、Expo Go から起動します。
 
@@ -28,7 +28,7 @@ Expo（React Native / TypeScript）で実装し、Expo Go から起動します�
 
 ```bash
 npx tsc --noEmit
-npx vitest run
+npm test
 (cd docs && PUPPETEER_SKIP_DOWNLOAD=1 npx mint@latest validate)
 (cd docs && PUPPETEER_SKIP_DOWNLOAD=1 npx mint@latest broken-links)
 ```
