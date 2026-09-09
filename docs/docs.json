@@ -28,6 +28,10 @@
           {
             "group": "仕様",
             "pages": ["developer/specification", "developer/testing"]
+          },
+          {
+            "group": "開発",
+            "pages": ["developer/development"]
           }
         ]
       }
