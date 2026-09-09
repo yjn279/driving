@@ -33,6 +33,11 @@ const LOCATION_UPDATE_INTERVAL_MS = 1000;
 const FLUSH_INTERVAL_MS = 5000;
 /** 経過時間の表示更新間隔。 */
 const ELAPSED_DISPLAY_INTERVAL_MS = 1000;
+/**
+ * 荷重の矢印を描き直す間隔。センサーは 50 Hz で届くが、向きの変化を追うには 10 Hz で足りる。
+ * 届いたサンプルごとに描き直すと、車載で長時間動かしたときの発熱と電池の消耗が増える。
+ */
+const LIVE_LOAD_DISPLAY_INTERVAL_MS = 100;
 
 const ZERO_LOAD: Load = { front: 0, right: 0 };
 
@@ -133,6 +138,15 @@ export default function RecordScreen() {
   const [distanceM, setDistanceM] = useState(0);
   const [stopError, setStopError] = useState<string | undefined>(undefined);
   const recordingRef = useRef<RecordingSession | null>(null);
+  const liveLoadUpdatedAtRef = useRef(0);
+
+  /** 荷重の表示を間引いて更新する。センサーのコールバックからはこちらを使う。 */
+  const updateLiveLoad = useCallback((load: Load) => {
+    const now = Date.now();
+    if (now - liveLoadUpdatedAtRef.current < LIVE_LOAD_DISPLAY_INTERVAL_MS) return;
+    liveLoadUpdatedAtRef.current = now;
+    setLiveLoad(load);
+  }, []);
 
   // 画面に入った時点で位置情報と DeviceMotion の権限をまとめて要求する。
   // キャリブレーションの途中で権限ダイアログを出すと、運転中に操作を求めることになるため。
@@ -210,11 +224,11 @@ export default function RecordScreen() {
         return;
       }
 
-      setLiveLoad(loadFromAcceleration(toVehicleAcceleration(phase.frame, measurement.acceleration)));
+      updateLiveLoad(loadFromAcceleration(toVehicleAcceleration(phase.frame, measurement.acceleration)));
     });
 
     return () => subscription.remove();
-  }, [phase]);
+  }, [phase, updateLiveLoad]);
 
   // 記録の段階では、車両座標系へ変換した加速度と位置情報をバッファへ積み、
   // 5 秒ごとにまとめて書き込む。コールバックごとの書き込みはしない。
@@ -257,7 +271,7 @@ export default function RecordScreen() {
           if (!measurement.acceleration) return;
           const vehicleAcceleration = toVehicleAcceleration(phase.frame, measurement.acceleration);
           session.accelerationBuffer.push({ t: Date.now(), ax: vehicleAcceleration.ax, ay: vehicleAcceleration.ay });
-          setLiveLoad(loadFromAcceleration(vehicleAcceleration));
+          updateLiveLoad(loadFromAcceleration(vehicleAcceleration));
         });
 
         // 位置情報は 1 Hz で取得する。ネイティブ側の通知がこれより頻繁でも、
@@ -316,9 +330,10 @@ export default function RecordScreen() {
       // すでに handleStop で解除済みのときは無害な二重呼び出しになる。
       deactivateKeepAwake();
     };
-  }, [phase]);
+  }, [phase, updateLiveLoad]);
 
   const handleRestart = useCallback(() => {
+    liveLoadUpdatedAtRef.current = 0;
     setLiveLoad(ZERO_LOAD);
     setPhase({ kind: 'stillness' });
   }, []);
