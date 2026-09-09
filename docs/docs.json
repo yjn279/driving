@@ -21,6 +21,15 @@
             "pages": ["user/getting-started", "user/driving", "user/review"]
           }
         ]
+      },
+      {
+        "tab": "開発者マニュアル",
+        "groups": [
+          {
+            "group": "仕様",
+            "pages": ["developer/specification"]
+          }
+        ]
       }
     ]
   }
