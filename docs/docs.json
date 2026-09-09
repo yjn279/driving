@@ -27,7 +27,7 @@
         "groups": [
           {
             "group": "仕様",
-            "pages": ["developer/specification"]
+            "pages": ["developer/specification", "developer/testing"]
           }
         ]
       }
